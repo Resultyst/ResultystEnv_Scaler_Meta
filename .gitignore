@@ -1,0 +1,10 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.env
+.venv
+venv/
+hf_error.log
+error.log
+*.log
+run_inference.ps1

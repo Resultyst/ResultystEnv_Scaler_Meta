@@ -1,0 +1,83 @@
+name: resultyst-env
+version: "1.0.0"
+description: >
+  Two-stage HR workflow environment for training and evaluating AI agents.
+  Stage 1: Job scam detection via domain/email/company verification.
+  Stage 2: Multi-timezone interview scheduling (only for legitimate postings).
+  Novel domain with context-aware rewards, overconfidence penalties, and typosquat traps.
+
+author: Team Resultyst
+tags:
+  - openenv
+  - hr
+  - scheduling
+  - fraud-detection
+  - real-world
+
+entry_point: app:app
+port: 7860
+
+tasks:
+  - id: task_easy
+    name: "Detect an Obvious Job Scam"
+    difficulty: easy
+    description: >
+      A blatant scam job posting from a 3-day-old .xyz domain.
+      Agent should investigate and reject within 8 steps.
+    ground_truth: scam
+    max_steps: 8
+
+  - id: task_medium
+    name: "Evaluate a Borderline Job Posting"
+    difficulty: medium
+    description: >
+      A real-looking startup role with mixed signals (Gmail recruiter, 2yo domain,
+      registered company). Agent must gather all 3 verification signals before deciding.
+      If legitimate, must schedule across overlapping calendar slots.
+    ground_truth: safe
+    max_steps: 12
+
+  - id: task_hard
+    name: "Cross-Timezone Scheduling with Typosquat Trap"
+    difficulty: hard
+    description: >
+      A sophisticated scam mimicking a top tech company using a typosquatted email
+      (micr0soft.com — zero instead of 'o'). Shallow agents miss the substitution.
+      If wrongly approved, must solve a complex IST/PST timezone scheduling puzzle.
+    ground_truth: scam
+    max_steps: 15
+
+action_space:
+  verification_stage:
+    - check_domain
+    - analyze_email
+    - verify_company
+    - mark_safe
+    - reject_job
+  scheduling_stage:
+    - propose_time
+    - reschedule
+    - finalize_schedule
+
+observation_space:
+  - stage
+  - job_post
+  - company_info
+  - calendars
+  - message
+  - available_actions
+  - step_count
+  - done
+
+reward:
+  type: continuous
+  range: [0.0, 1.0]
+  shaped: true
+  components:
+    - signal_strength
+    - decision_correctness
+    - overconfidence_penalty
+    - overlap_score
+    - comfort_score
+    - scheduling_efficiency
+    - loop_penalty

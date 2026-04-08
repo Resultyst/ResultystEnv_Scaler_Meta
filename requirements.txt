@@ -1,0 +1,16 @@
+# Core API framework
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+
+# Data models
+pydantic==2.10.4
+
+# HTTP clients
+httpx==0.27.2
+requests==2.32.3
+
+# OpenAI-compatible LLM client (async support)
+openai==1.57.4
+
+# Async support (already in stdlib for 3.11 but pinning for clarity)
+anyio==4.7.0
