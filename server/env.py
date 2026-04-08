@@ -113,7 +113,7 @@ class ResultystEnv:
         # ── Stage gate ─────────────────────────
         if s.stage == "verification" and atype in SCHEDULING_ACTIONS:
             reward = self._build_reward(
-                value=0.0,
+                value=self._clip(0.0),
                 breakdown=RewardBreakdown(loop_penalty=loop_penalty),
                 reason=f"❌ Action '{atype}' is not available in verification stage.",
             )
@@ -125,7 +125,7 @@ class ResultystEnv:
 
         if s.stage == "scheduling" and atype in VERIFICATION_ACTIONS:
             reward = self._build_reward(
-                value=0.0,
+                value=self._clip(0.0),
                 breakdown=RewardBreakdown(loop_penalty=loop_penalty),
                 reason=f"❌ Action '{atype}' is not available in scheduling stage.",
             )
@@ -281,7 +281,7 @@ class ResultystEnv:
             return self._handle_reject_job(loop_penalty)
 
         # Fallback (should not reach here due to Literal type)
-        reward = self._build_reward(value=0.0, breakdown=RewardBreakdown(), reason="Unknown action.")
+        reward = self._build_reward(value=self._clip(0.0), breakdown=RewardBreakdown(), reason="Unknown action.")
         return self._build_observation(message="Unknown action."), reward
 
     def _handle_mark_safe(self, loop_penalty: float) -> tuple[Observation, Reward]:
@@ -393,11 +393,11 @@ class ResultystEnv:
             if slot in valid_slots:
                 comfort = _compute_comfort_score(slot)
                 if is_new:
-                    overlap = 1.0
-                    eff = max(0.0, 1.0 - (self._scheduling_steps - 1) * 0.1)
+                    overlap = 0.95
+                    eff = max(0.05, min(0.95, 1.0 - (self._scheduling_steps - 1) * 0.1))
                     raw_reward = overlap * 0.05 + comfort * 0.03 + eff * 0.02
                 else:
-                    raw_reward = 0.0
+                    raw_reward = 0.01
                 msg = (
                     f"✅ '{slot}' is a valid overlap slot. "
                     f"Comfort score: {comfort:.1f}. Good proposal — now finalize or reschedule."
@@ -412,8 +412,8 @@ class ResultystEnv:
             reward = self._build_reward(
                 value=self._clip(raw_reward + loop_penalty),
                 breakdown=RewardBreakdown(
-                    overlap_score=(1.0 if slot in valid_slots else 0.0),
-                    comfort_score=(_compute_comfort_score(slot) if slot in valid_slots else 0.0),
+                    overlap_score=(0.95 if slot in valid_slots else 0.01),
+                    comfort_score=(_compute_comfort_score(slot) if slot in valid_slots else 0.01),
                     step_taken=raw_reward,
                     loop_penalty=loop_penalty,
                 ),
@@ -426,9 +426,9 @@ class ResultystEnv:
             raw_reward = -0.01  # Small cost for rescheduling (time inefficiency)
             msg = f"🔄 Rescheduling requested. Reason: {reason}. Propose a new slot."
             reward = self._build_reward(
-                value=max(0.0, raw_reward + loop_penalty),
+                value=self._clip(raw_reward + loop_penalty),
                 breakdown=RewardBreakdown(
-                    scheduling_efficiency=max(0.0, -0.05 * self._scheduling_steps),
+                    scheduling_efficiency=max(0.01, -0.05 * self._scheduling_steps),
                     loop_penalty=loop_penalty,
                 ),
                 reason=f"reschedule: step {self._scheduling_steps}, reason='{reason}'.",
@@ -438,7 +438,7 @@ class ResultystEnv:
         if atype == "finalize_schedule":
             return self._handle_finalize(loop_penalty, valid_slots)
 
-        reward = self._build_reward(value=0.0, breakdown=RewardBreakdown(), reason="Unknown scheduling action.")
+        reward = self._build_reward(value=self._clip(0.0), breakdown=RewardBreakdown(), reason="Unknown scheduling action.")
         return self._build_observation(message="Unknown scheduling action."), reward
 
     def _handle_finalize(
@@ -453,8 +453,8 @@ class ResultystEnv:
 
         if slot and slot in valid_slots:
             comfort = _compute_comfort_score(slot)
-            eff = max(0.0, 1.0 - (self._scheduling_steps - 1) * 0.10)
-            overlap_score = 1.0
+            eff = max(0.05, min(0.95, 1.0 - (self._scheduling_steps - 1) * 0.10))
+            overlap_score = 0.95
             sched_reward = overlap_score * 0.4 + comfort * 0.3 + eff * 0.3
             late_penalty = -0.10 if comfort == 0.0 else 0.0
             final = sched_reward + late_penalty + loop_penalty
@@ -476,9 +476,9 @@ class ResultystEnv:
                 f"⚠️ Interview 'finalized' at '{slot}' but this slot has no valid overlap. "
                 f"One party will be inconvenienced."
             )
-            breakdown = RewardBreakdown(overlap_score=0.0, comfort_score=0.0, loop_penalty=loop_penalty)
+            breakdown = RewardBreakdown(overlap_score=0.01, comfort_score=0.01, loop_penalty=loop_penalty)
         else:
-            final = 0.0
+            final = 0.01
             msg = "❌ finalize_schedule called without a proposed slot."
             breakdown = RewardBreakdown()
 
@@ -513,7 +513,7 @@ class ResultystEnv:
 
     @staticmethod
     def _clip(val: float) -> float:
-        return round(max(0.0, min(1.0, val)), 4)
+        return round(max(0.01, min(0.99, val)), 4)
 
     def _build_reward(
         self,
