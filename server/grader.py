@@ -24,11 +24,11 @@ class GradeResult:
     def as_dict(self) -> dict:
         return {
             "score": _clamp_score(self.score),
-            "signal_detection_score": max(0.01, min(0.99, self.signal_detection_score)),
-            "decision_correctness": max(0.01, min(0.99, self.decision_correctness)),
-            "overconfidence_penalty": self.overconfidence_penalty,  # can be negative
-            "scheduling_score": max(0.01, min(0.99, self.scheduling_score)),
-            "efficiency_score": max(0.01, min(0.99, self.efficiency_score)),
+            "signal_detection_score": _clamp_score(self.signal_detection_score),
+            "decision_correctness": _clamp_score(self.decision_correctness),
+            "overconfidence_penalty": self.overconfidence_penalty),
+            "scheduling_score": _clamp_score(self.scheduling_score),
+            "efficiency_score": _clamp_score(self.efficiency_score),
             "details": self.details,
         }
 
