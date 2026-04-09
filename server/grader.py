@@ -26,7 +26,7 @@ class GradeResult:
             "score": _clamp_score(self.score),
             "signal_detection_score": _clamp_score(self.signal_detection_score),
             "decision_correctness": _clamp_score(self.decision_correctness),
-            "overconfidence_penalty": round(float(self.overconfidence_penalty), 4),
+            "overconfidence_penalty": _normalize_penalty(self.overconfidence_penalty),
             "scheduling_score": _clamp_score(self.scheduling_score),
             "efficiency_score": _clamp_score(self.efficiency_score),
             "details": self.details,
@@ -44,6 +44,15 @@ def _clamp_score(score: float) -> float:
     """Ensures score is strictly between 0 and 1, as required by Phase 2 validator."""
     # Engineering safe ranges: 0.01 floor, 0.99 ceiling
     return round(max(0.01, min(0.99, float(score))), 4)
+
+def _normalize_penalty(p: float) -> float:
+    """
+    Convert penalty [-0.35, 0] → (0.01, 0.99)
+    More negative = worse score
+    """
+    # Map range [-0.35, 0] → [0.01, 0.99]
+    normalized = (p + 0.35) / 0.35  # → [0,1]
+    return round(max(0.01, min(0.99, normalized)), 4)
 
 
 def _signal_detection_score(checks_run: set[str], required_checks: int) -> float:
