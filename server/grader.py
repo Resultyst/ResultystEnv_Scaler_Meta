@@ -26,7 +26,7 @@ class GradeResult:
             "score": _clamp_score(self.score),
             "signal_detection_score": _clamp_score(self.signal_detection_score),
             "decision_correctness": _clamp_score(self.decision_correctness),
-            "overconfidence_penalty": self.overconfidence_penalty,
+            "overconfidence_penalty": round(float(self.overconfidence_penalty), 4),
             "scheduling_score": _clamp_score(self.scheduling_score),
             "efficiency_score": _clamp_score(self.efficiency_score),
             "details": self.details,
