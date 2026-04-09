@@ -50,10 +50,12 @@ def _normalize_penalty(p: float) -> float:
     Convert penalty [-0.35, 0] → (0.01, 0.99)
     More negative = worse score
     """
-    # Map range [-0.35, 0] → [0.01, 0.99]
     normalized = (p + 0.35) / 0.35  # → [0,1]
-    return round(max(0.01, min(0.99, normalized)), 4)
 
+    # HARD clamp before rounding (prevents 1.0 edge case)
+    normalized = max(0.01, min(0.99, normalized))
+
+    return round(normalized, 4)
 
 def _signal_detection_score(checks_run: set[str], required_checks: int) -> float:
     """
