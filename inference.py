@@ -2,17 +2,6 @@
 """
 ResultystEnv — Baseline Inference Script
 Matches the official OpenEnv hackathon async pattern exactly.
-
-Environment variables required:
-  API_BASE_URL   LLM endpoint  e.g. https://router.huggingface.co/v1
-  MODEL_NAME     Model id      e.g. meta-llama/Llama-3.1-8B-Instruct
-  HF_TOKEN       HuggingFace / API key
-  ENV_BASE_URL   (optional) Environment URL e.g. http://localhost:7860
-
-Structured stdout log format (mandatory — do not modify):
-  [START] task=<id> env=ResultystEnv model=<model>
-  [STEP]  step=<n> action=<str> reward=<float> done=<bool> error=<str|None>
-  [END]   success=<bool> steps=<n> score=<float> rewards=[...]
 """
 
 from __future__ import annotations
@@ -22,7 +11,6 @@ import json
 import os
 import re
 import sys
-import time
 from typing import Any, List, Optional
 
 import httpx
@@ -30,19 +18,19 @@ from openai import AsyncOpenAI
 
 
 # ─────────────────────────────────────────────
-# Config
+# Config — USE INJECTED ENV VARS
 # ─────────────────────────────────────────────
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN = os.getenv("HF_TOKEN")
-ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
+API_BASE_URL = os.environ["API_BASE_URL"]               # Required by validator
+API_KEY = os.environ["API_KEY"]                         # Required by validator
+MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
 
 BENCHMARK = "ResultystEnv"
 TASKS = ["task_easy", "task_medium", "task_hard"]
 
 MAX_STEPS = 15
-MAX_TOTAL_REWARD = 1.0      # Maximum expected sum of rewards roughly scaling to 1.0
+MAX_TOTAL_REWARD = 1.0
 SUCCESS_SCORE_THRESHOLD = 0.5
 
 # ─────────────────────────────────────────────
@@ -72,7 +60,6 @@ def log_end(*, success: bool, steps: int, score: float, rewards: List[float]) ->
 # ─────────────────────────────────────────────
 
 class StepResult:
-    """Wraps the HTTP response from /step to match the expected API pattern."""
     def __init__(self, data: dict) -> None:
         self._data = data
         self.observation = ObsWrapper(data.get("observation", {}))
@@ -80,12 +67,8 @@ class StepResult:
         self.done: bool = data.get("done", False)
         self.info: dict = data.get("info", {})
 
-    def __repr__(self) -> str:
-        return f"StepResult(reward={self.reward}, done={self.done})"
-
 
 class ResetResult:
-    """Wraps the HTTP response from /reset."""
     def __init__(self, data: dict) -> None:
         self._data = data
         self.observation = ObsWrapper(data)
@@ -93,7 +76,6 @@ class ResetResult:
 
 
 class ObsWrapper:
-    """Attribute-style access to observation dict."""
     def __init__(self, data: dict) -> None:
         self._data = data
 
@@ -107,8 +89,6 @@ class ObsWrapper:
 
 
 class ResultystEnvClient:
-    """Async HTTP client for the ResultystEnv FastAPI server."""
-
     def __init__(self, base_url: str) -> None:
         self._base = base_url.rstrip("/")
         self._client: Optional[httpx.AsyncClient] = None
@@ -143,12 +123,12 @@ class ResultystEnvClient:
 
 
 # ─────────────────────────────────────────────
-# LLM Client (OpenAI-compatible)
+# LLM Client — MUST USE INJECTED CREDENTIALS
 # ─────────────────────────────────────────────
 
 llm = AsyncOpenAI(
     base_url=API_BASE_URL,
-    api_key=HF_TOKEN or "dummy",
+    api_key=API_KEY,
 )
 
 SYSTEM_PROMPT = """You are an expert HR compliance agent managing job verification and interview scheduling.
@@ -221,20 +201,17 @@ def _build_user_message(obs: ObsWrapper, step_num: int, history: List[str]) -> s
     lines += [
         "",
         f"Available actions: {available}",
-        "Respond ONLY with: {{\"action_type\": \"...\", \"parameters\": {{}}}}",
+        "Respond ONLY with: {\"action_type\": \"...\", \"parameters\": {}}",
     ]
     return "\n".join(lines)
 
 
 def _parse_action(text: str) -> Optional[dict]:
-    """Robustly extract JSON action from LLM response."""
     text = text.strip()
-    # Strip markdown fences
     if "```" in text:
         m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
         if m:
             text = m.group(1)
-    # Find first JSON object
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if m:
         try:
@@ -250,7 +227,6 @@ async def get_model_action(
     step_num: int,
     history: List[str],
 ) -> tuple[str, dict]:
-    """Ask LLM for next action. Returns (action_type, parameters)."""
     user_msg = _build_user_message(obs, step_num, history)
     messages.append({"role": "user", "content": user_msg})
 
@@ -270,7 +246,6 @@ async def get_model_action(
 
     parsed = _parse_action(raw)
     if not parsed or "action_type" not in parsed:
-        # Fallback to first available action
         available = obs.available_actions or ["check_domain"]
         return available[0], {}
 
@@ -278,7 +253,7 @@ async def get_model_action(
 
 
 # ─────────────────────────────────────────────
-# Episode runner (matches official async pattern)
+# Episode runner
 # ─────────────────────────────────────────────
 
 async def run_episode(task_id: str, episode: int = 1) -> dict:
@@ -295,7 +270,7 @@ async def run_episode(task_id: str, episode: int = 1) -> dict:
     history: List[str] = []
 
     try:
-        result = await env.reset(task_id)       # OpenENV.reset()
+        result = await env.reset(task_id)
         last_reward = 0.0
 
         for step in range(1, MAX_STEPS + 1):
@@ -308,7 +283,7 @@ async def run_episode(task_id: str, episode: int = 1) -> dict:
 
             error = None
             try:
-                result = await env.step(action_type, parameters)    # OpenENV.step()
+                result = await env.step(action_type, parameters)
                 obs = result.observation
                 reward = result.reward or 0.0
                 done = result.done
@@ -330,11 +305,9 @@ async def run_episode(task_id: str, episode: int = 1) -> dict:
             if done:
                 break
 
-        # Score = sum(rewards) / MAX_TOTAL_REWARD, clamped to [0, 1]
         score = sum(rewards) / MAX_TOTAL_REWARD if MAX_TOTAL_REWARD > 0 else 0.0
         score = min(max(score, 0.0), 1.0)
 
-        # Also fetch grader score for richer info
         try:
             grade_result = await env.grade()
             grader_score = grade_result.get("score", score)
@@ -366,11 +339,14 @@ async def run_episode(task_id: str, episode: int = 1) -> dict:
 # ─────────────────────────────────────────────
 
 async def main() -> None:
-    if not HF_TOKEN and "openai.com" not in API_BASE_URL:
-        print(
-            "WARNING: HF_TOKEN not set. Export HF_TOKEN before running.",
-            file=sys.stderr,
-        )
+    # Validate required env vars
+    missing = []
+    for var in ["API_BASE_URL", "API_KEY"]:
+        if var not in os.environ:
+            missing.append(var)
+    if missing:
+        print(f"ERROR: Missing required environment variables: {missing}", file=sys.stderr)
+        sys.exit(1)
 
     print("=" * 60, flush=True)
     print(f"ResultystEnv — Baseline Inference", flush=True)
@@ -386,7 +362,6 @@ async def main() -> None:
         results.append(result)
         await asyncio.sleep(0.5)
 
-    # Summary table
     print(f"\n{'='*60}", flush=True)
     print("BASELINE RESULTS SUMMARY", flush=True)
     print(f"{'='*60}", flush=True)
