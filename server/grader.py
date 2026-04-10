@@ -24,7 +24,6 @@ def _safe_float(value: float, allow_negative: bool = False) -> float:
             return -0.9998
         if val >= 0.9999:
             return 0.9998
-        # Ensure it's not exactly 0 after rounding
         clamped = max(-0.9998, min(0.9998, val))
         rounded = round(clamped, 4)
         if rounded == 0.0:
@@ -42,6 +41,12 @@ def _safe_float(value: float, allow_negative: bool = False) -> float:
         if rounded == 1.0:
             return 0.9999
         return rounded
+
+
+# Alias for backward compatibility with env.py
+def _strict_clamp(value: float) -> float:
+    """Ensures value is strictly between 0 and 1 (0.0001 to 0.9999)."""
+    return _safe_float(value)
 
 
 @dataclass
@@ -68,7 +73,6 @@ class GradeResult:
         """Return dict with guaranteed safe float values."""
         def scrub(obj):
             if isinstance(obj, float):
-                # Check if this looks like a penalty field by name context
                 return _safe_float(obj, allow_negative=True) if obj < 0 else _safe_float(obj)
             elif isinstance(obj, int):
                 return _safe_float(float(obj))
@@ -93,7 +97,6 @@ class GradeResult:
             "details": scrub(self.details),
         }
         
-        # Double-check every value
         return scrub(raw)
 
 
