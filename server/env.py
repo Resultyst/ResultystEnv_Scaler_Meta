@@ -29,8 +29,7 @@ from .models import (
     VERIFICATION_ACTIONS,
 )
 from .tasks import get_task
-from .grader import grade, _compute_comfort_score, _strict_clamp
-
+from .grader import grade, _compute_comfort_score, _strict_clamp, _safe_float
 
 # ─────────────────────────────────────────────
 # Constants
