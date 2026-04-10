@@ -34,7 +34,7 @@ from .tasks import list_tasks
 def scrub_float(obj: Any) -> Any:
     """Recursively replace any float outside (0,1) with safe values."""
     if isinstance(obj, float):
-        # Convert negative to positive (use absolute value)
+        # Convert negative to positive
         if obj < 0:
             obj = -obj
         if obj == 0.0:
@@ -57,25 +57,30 @@ def scrub_float(obj: Any) -> Any:
     else:
         return obj
 
-
 class FloatScrubberMiddleware(BaseHTTPMiddleware):
     """Middleware that scrubs all floats in JSON responses."""
     async def dispatch(self, request, call_next):
         response = await call_next(request)
-        if response.headers.get("content-type") == "application/json":
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type:
             body = b""
             async for chunk in response.body_iterator:
                 body += chunk
             try:
                 data = json.loads(body)
                 scrubbed = scrub_float(data)
+                new_body = json.dumps(scrubbed).encode("utf-8")
+                # Create new headers without content-length
+                headers = dict(response.headers)
+                headers.pop("content-length", None)
                 return Response(
-                    content=json.dumps(scrubbed),
+                    content=new_body,
                     status_code=response.status_code,
-                    headers=dict(response.headers),
+                    headers=headers,
                     media_type="application/json",
                 )
             except:
+                # If JSON parsing fails, return original response
                 pass
         return response
 
