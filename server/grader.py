@@ -22,15 +22,29 @@ class GradeResult:
     details: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
-        return {
-            "score": _clamp_score(self.score),
-            "signal_detection_score": _clamp_score(self.signal_detection_score),
-            "decision_correctness": _clamp_score(self.decision_correctness),
-            "overconfidence_penalty": _normalize_penalty(self.overconfidence_penalty),
-            "scheduling_score": _clamp_score(self.scheduling_score),
-            "efficiency_score": _clamp_score(self.efficiency_score),
+        def _scrub(obj):
+            if isinstance(obj, (float, int)) and not isinstance(obj, bool):
+                # Strictly within (0, 1). 0.0001 floor, 0.9999 ceiling.
+                # Use float conversion to catch any int 0/1.
+                val = float(obj)
+                clamped = max(0.0001, min(0.9999, val))
+                return round(clamped, 4)
+            elif isinstance(obj, dict):
+                return {k: _scrub(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_scrub(v) for v in obj]
+            return obj
+
+        raw = {
+            "score": self.score,
+            "signal_detection_score": self.signal_detection_score,
+            "decision_correctness": self.decision_correctness,
+            "overconfidence_penalty": self.overconfidence_penalty,
+            "scheduling_score": self.scheduling_score,
+            "efficiency_score": self.efficiency_score,
             "details": self.details,
         }
+        return _scrub(raw)
 
 
 # ─────────────────────────────────────────────
@@ -42,20 +56,11 @@ VERIFICATION_CHECKS = {"check_domain", "analyze_email", "verify_company"}
 
 def _clamp_score(score: float) -> float:
     """Ensures score is strictly between 0 and 1, as required by Phase 2 validator."""
-    # Engineering safe ranges: 0.01 floor, 0.99 ceiling
-    return round(max(0.01, min(0.99, float(score))), 4)
+    # Engineering safe ranges: 0.0001 floor, 0.9999 ceiling
+    val = float(score)
+    clamped = max(0.0001, min(0.9999, val))
+    return round(clamped, 4)
 
-def _normalize_penalty(p: float) -> float:
-    """
-    Convert penalty [-0.35, 0] → (0.01, 0.99)
-    More negative = worse score
-    """
-    normalized = (p + 0.35) / 0.35  # → [0,1]
-
-    # HARD clamp before rounding (prevents 1.0 edge case)
-    normalized = max(0.01, min(0.99, normalized))
-
-    return round(normalized, 4)
 
 def _signal_detection_score(checks_run: set[str], required_checks: int) -> float:
     """
