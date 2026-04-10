@@ -2,7 +2,7 @@
 ResultystEnv — Grader
 Deterministic, interpretable scoring for all 3 tasks.
 Breakdown: signal_detection_score + decision_correctness + overconfidence_penalty
-All graders return float in (0, 1).
+All graders return float strictly in (0, 1) — NEVER 0.0 or 1.0.
 """
 
 from __future__ import annotations
@@ -10,60 +10,79 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-def _strict_clamp(value: float) -> float:
-    """Ensures value is strictly between 0 and 1 (0.0001 to 0.9999)."""
-    val = float(value)
-    clamped = max(0.0001, min(0.9999, val))
-    return round(clamped, 4)
-
-
-def _strict_clamp_signed(value: float) -> float:
+def _safe_float(value: float, allow_negative: bool = False) -> float:
     """
-    Ensures value is strictly between -0.9999 and 0.9999, but NEVER exactly 0.0.
-    Returns a small negative if value would be exactly 0.0.
+    Guaranteed safe float — NEVER returns exactly 0.0, 1.0, or -0.0.
+    Returns value strictly in (0, 1) or (-1, 1) if allow_negative=True.
     """
     val = float(value)
-    if val == 0.0:
-        return -0.0001  # Small negative instead of exactly 0.0
-    clamped = max(-0.9999, min(0.9999, val))
-    return round(clamped, 4)
+    
+    if allow_negative:
+        if val == 0.0 or val == -0.0:
+            return -0.0001
+        if val <= -0.9999:
+            return -0.9998
+        if val >= 0.9999:
+            return 0.9998
+        # Ensure it's not exactly 0 after rounding
+        clamped = max(-0.9998, min(0.9998, val))
+        rounded = round(clamped, 4)
+        if rounded == 0.0:
+            return -0.0001 if val < 0 else 0.0001
+        return rounded
+    else:
+        if val <= 0.0:
+            return 0.0001
+        if val >= 1.0:
+            return 0.9999
+        clamped = max(0.0001, min(0.9999, val))
+        rounded = round(clamped, 4)
+        if rounded == 0.0:
+            return 0.0001
+        if rounded == 1.0:
+            return 0.9999
+        return rounded
 
 
 @dataclass
 class GradeResult:
     """Interpretable grading output per task."""
-    score: float                            # Final 0.0001–0.9999
-    signal_detection_score: float           # Did agent gather enough evidence?
-    decision_correctness: float             # Was the scam/safe verdict right?
-    overconfidence_penalty: float           # Penalty for rushing to verdict (negative or near-zero)
-    scheduling_score: float                 # Only for scheduling tasks
-    efficiency_score: float                 # Solved in fewer steps than max?
+    score: float
+    signal_detection_score: float
+    decision_correctness: float
+    overconfidence_penalty: float
+    scheduling_score: float
+    efficiency_score: float
     details: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        """Ensure all float fields are strictly clamped on initialization."""
-        self.score = _strict_clamp(self.score)
-        self.signal_detection_score = _strict_clamp(self.signal_detection_score)
-        self.decision_correctness = _strict_clamp(self.decision_correctness)
-        # Overconfidence penalty can be negative
-        self.overconfidence_penalty = _strict_clamp_signed(self.overconfidence_penalty)
-        self.scheduling_score = _strict_clamp(self.scheduling_score)
-        self.efficiency_score = _strict_clamp(self.efficiency_score)
+        """Ensure all float fields are safe on initialization."""
+        self.score = _safe_float(self.score)
+        self.signal_detection_score = _safe_float(self.signal_detection_score)
+        self.decision_correctness = _safe_float(self.decision_correctness)
+        self.overconfidence_penalty = _safe_float(self.overconfidence_penalty, allow_negative=True)
+        self.scheduling_score = _safe_float(self.scheduling_score)
+        self.efficiency_score = _safe_float(self.efficiency_score)
 
     def as_dict(self) -> dict:
-        def _scrub(obj):
-            if isinstance(obj, (float, int)) and not isinstance(obj, bool):
-                val = float(obj)
-                if val == 0.0:
-                    return -0.0001 if obj < 0 else 0.0001
-                clamped = max(-0.9999, min(0.9999, val))
-                return round(clamped, 4)
+        """Return dict with guaranteed safe float values."""
+        def scrub(obj):
+            if isinstance(obj, float):
+                # Check if this looks like a penalty field by name context
+                return _safe_float(obj, allow_negative=True) if obj < 0 else _safe_float(obj)
+            elif isinstance(obj, int):
+                return _safe_float(float(obj))
             elif isinstance(obj, dict):
-                return {k: _scrub(v) for k, v in obj.items()}
+                return {k: scrub(v) for k, v in obj.items()}
             elif isinstance(obj, list):
-                return [_scrub(v) for v in obj]
-            return obj
-
+                return [scrub(v) for v in obj]
+            elif isinstance(obj, bool):
+                return obj
+            elif obj is None:
+                return None
+            else:
+                return obj
+        
         raw = {
             "score": self.score,
             "signal_detection_score": self.signal_detection_score,
@@ -71,9 +90,11 @@ class GradeResult:
             "overconfidence_penalty": self.overconfidence_penalty,
             "scheduling_score": self.scheduling_score,
             "efficiency_score": self.efficiency_score,
-            "details": self.details,
+            "details": scrub(self.details),
         }
-        return _scrub(raw)
+        
+        # Double-check every value
+        return scrub(raw)
 
 
 # ─────────────────────────────────────────────
@@ -83,61 +104,48 @@ class GradeResult:
 VERIFICATION_CHECKS = {"check_domain", "analyze_email", "verify_company"}
 
 
-def _clamp_score(score: float) -> float:
-    """Ensures score is strictly between 0 and 1, as required by Phase 2 validator."""
-    return _strict_clamp(score)
-
-
 def _signal_detection_score(checks_run: set[str], required_checks: int) -> float:
-    """
-    How well did the agent gather evidence before deciding?
-    - Full score if all 3 checks were run
-    - Partial credit based on fraction of checks completed
-    - Penalizes skipping important investigation steps
-    """
+    """Returns strictly between 0.0001 and 0.9999."""
     n_run = len(checks_run & VERIFICATION_CHECKS)
-    n_total = len(VERIFICATION_CHECKS)  # always 3
+    n_total = len(VERIFICATION_CHECKS)
+    
+    if n_total == 0:
+        return _safe_float(0.05)
+        
     fraction = n_run / n_total
 
     if n_run >= required_checks:
-        # Internal ceiling: 0.9499 instead of 1.0
-        result = min(0.9499, fraction + 0.1)
+        result = min(0.95, fraction + 0.1)
     else:
-        result = max(0.0501, fraction)
+        result = max(0.05, fraction)
     
-    return _strict_clamp(result)
+    return _safe_float(result)
 
 
 def _overconfidence_penalty(checks_run: set[str], required_checks: int) -> float:
-    """
-    Penalty applied when an agent makes a verdict with insufficient investigation.
-    Returns a negative float (or -0.0001 when no penalty, never exactly 0.0).
-    """
+    """Returns negative float (or -0.0001). NEVER 0.0."""
     n_run = len(checks_run & VERIFICATION_CHECKS)
+    
     if n_run >= required_checks:
-        return -0.0001  # Small negative instead of exactly 0.0
+        return _safe_float(-0.0001, allow_negative=True)
     
-    # Severity scales with how many checks were skipped
     missing = required_checks - n_run
-    penalty = -0.1501 * missing  # -0.1501 per missing required check
+    penalty = -0.15 * missing
     
-    return _strict_clamp_signed(penalty)
+    return _safe_float(penalty, allow_negative=True)
 
 
 def _efficiency_score(steps_used: int, max_steps: int) -> float:
-    """
-    Rewards finishing faster (but not at the expense of correctness).
-    Linear: ~0.95 at min steps, ~0.05 at max_steps.
-    """
+    """Returns strictly between 0.0001 and 0.9999."""
     if steps_used <= 0:
-        return 0.0501
+        return _safe_float(0.05)
     
-    min_expected = 3  # At minimum: 1 check + decide + (optionally more)
-    score = (max_steps - steps_used) / max(1, max_steps - min_expected)
+    min_expected = 3
+    denominator = max(1, max_steps - min_expected)
+    score = (max_steps - steps_used) / denominator
     
-    # Clamp internal score to safe range
-    result = max(0.0501, min(0.9499, score))
-    return _strict_clamp(result)
+    result = max(0.05, min(0.95, score))
+    return _safe_float(result)
 
 
 def _scheduling_quality(
@@ -146,55 +154,36 @@ def _scheduling_quality(
     proposed_slot: Optional[str],
     steps_in_scheduling: int,
 ) -> float:
-    """
-    Multi-factor scheduling score:
-      overlap_score  × 0.4  — did the agent pick a valid overlap slot?
-      comfort_score  × 0.3  — was it within business hours (08:00–18:00 local)?
-      efficiency     × 0.3  — fewer reschedule attempts = better
-    """
+    """Returns strictly between 0.0001 and 0.9999."""
     if not finalized_slot:
-        # Partial credit if a valid slot was proposed but not finalized
         if proposed_slot and proposed_slot in valid_slots:
-            result = 0.2501
-        else:
-            result = 0.0501
-        return _strict_clamp(result)
+            return _safe_float(0.25)
+        return _safe_float(0.05)
 
-    # Overlap score
-    overlap = 0.9499 if finalized_slot in valid_slots else 0.0501
-
-    # Comfort score: check that actual hour is in business range
+    overlap = 0.95 if finalized_slot in valid_slots else 0.05
     comfort = _compute_comfort_score(finalized_slot)
-
-    # Scheduling efficiency: 0.9499 for direct finalize, penalize rescheduling
-    eff = max(0.0501, min(0.9499, 0.9499 - (steps_in_scheduling - 1) * 0.1501))
+    eff = max(0.05, min(0.95, 0.95 - (steps_in_scheduling - 1) * 0.15))
 
     total = overlap * 0.4 + comfort * 0.3 + eff * 0.3
-    result = max(0.0501, min(0.9499, total))
-    return _strict_clamp(result)
+    result = max(0.05, min(0.95, total))
+    return _safe_float(result)
 
 
 def _compute_comfort_score(slot_iso: str) -> float:
-    """
-    Returns 0.9499 if slot is 08:00–18:00 local, 0.5001 if 06:00–08:00 or 18:00–20:00,
-    0.0501 if outside those ranges.
-    """
+    """Returns strictly between 0.0001 and 0.9999."""
     try:
         from datetime import datetime
-        import re
         
-        # Parse offset-aware ISO datetime  e.g. 2025-06-15T06:30:00+05:30
-        # Python's fromisoformat handles this in 3.11+
         dt = datetime.fromisoformat(slot_iso)
         hour = dt.hour + dt.minute / 60
         
         if 8.0 <= hour < 18.0:
-            return _strict_clamp(0.9499)
+            return _safe_float(0.95)
         if 6.0 <= hour < 8.0 or 18.0 <= hour < 20.0:
-            return _strict_clamp(0.5001)
-        return _strict_clamp(0.0501)
+            return _safe_float(0.50)
+        return _safe_float(0.05)
     except Exception:
-        return _strict_clamp(0.5001)  # Unknown format — neutral
+        return _safe_float(0.50)
 
 
 # ─────────────────────────────────────────────
@@ -207,16 +196,7 @@ def grade_task_easy(
     steps_used: int,
     **_,
 ) -> GradeResult:
-    """
-    Task Easy: Detect an obvious scam.
-    Ground truth: scam
-    Correct action: reject_job after ≥2 checks.
-
-    Weights:
-      decision_correctness  50%
-      signal_detection      30%
-      efficiency            20%
-    """
+    """Task Easy: Detect an obvious scam."""
     required_checks = 2
     ground_truth = "scam"
 
@@ -225,29 +205,29 @@ def grade_task_easy(
     eff = _efficiency_score(steps_used, max_steps=8)
 
     if verdict == ground_truth:
-        dec = 0.9499  # Correct verdict base
+        dec = 0.95
     elif verdict is None:
-        dec = 0.0501  # No verdict
+        dec = 0.05
     else:
-        dec = 0.0501  # Wrong verdict (but keep positive, penalty will reduce)
+        dec = 0.05
 
-    # Apply overconfidence as a penalty (add since overconf is negative)
-    dec_adjusted = max(0.0501, min(0.9899, dec + overconf))
+    dec_adjusted = dec + overconf
+    dec_adjusted = max(0.05, min(0.99, dec_adjusted))
 
     raw = (
         dec_adjusted * 0.50 +
         sig * 0.30 +
         eff * 0.20
     )
-    raw = max(0.0201, min(0.9799, raw))
-    score = _clamp_score(raw)
+    raw = max(0.02, min(0.98, raw))
+    score = _safe_float(raw)
 
     return GradeResult(
         score=score,
         signal_detection_score=sig,
         decision_correctness=dec_adjusted,
         overconfidence_penalty=overconf,
-        scheduling_score=0.0501,
+        scheduling_score=_safe_float(0.05),
         efficiency_score=eff,
         details={
             "ground_truth": ground_truth,
@@ -269,17 +249,8 @@ def grade_task_medium(
     steps_in_scheduling: int = 0,
     **_,
 ) -> GradeResult:
-    """
-    Task Medium: Borderline job — right answer is 'safe' + schedule correctly.
-    Ground truth: safe → must schedule
-
-    Weights:
-      decision_correctness  35%
-      signal_detection      25%
-      scheduling_score      30%
-      efficiency            10%
-    """
-    required_checks = 3   # All 3 required for mixed signals
+    """Task Medium: Borderline job — right answer is 'safe' + schedule."""
+    required_checks = 3
     ground_truth = "safe"
 
     sig = _signal_detection_score(checks_run, required_checks)
@@ -288,14 +259,14 @@ def grade_task_medium(
     sched = _scheduling_quality(finalized_slot, valid_slots, proposed_slot, steps_in_scheduling)
 
     if verdict == ground_truth:
-        dec = 0.9499
+        dec = 0.95
     elif verdict is None:
-        dec = 0.0501
+        dec = 0.05
     else:
-        dec = 0.0501  # Rejected a legit job
+        dec = 0.05
 
-    # Apply overconfidence penalty
-    dec_adjusted = max(0.0501, min(0.9899, dec + overconf))
+    dec_adjusted = dec + overconf
+    dec_adjusted = max(0.05, min(0.99, dec_adjusted))
 
     raw = (
         dec_adjusted * 0.35 +
@@ -303,8 +274,8 @@ def grade_task_medium(
         sched * 0.30 +
         eff * 0.10
     )
-    raw = max(0.0201, min(0.9799, raw))
-    score = _clamp_score(raw)
+    raw = max(0.02, min(0.98, raw))
+    score = _safe_float(raw)
 
     return GradeResult(
         score=score,
@@ -335,18 +306,7 @@ def grade_task_hard(
     steps_in_scheduling: int = 0,
     **_,
 ) -> GradeResult:
-    """
-    Task Hard: Typosquat trap — 'micr0soft.com'.
-    Ground truth: scam (typosquat = definitive fraud).
-    If agent falls for it and schedules: scheduling score is irrelevant (verdict wrong).
-
-    Weights:
-      decision_correctness  45%
-      signal_detection      35%  ← Higher weight — catching typosquat requires careful analysis
-      efficiency            20%
-
-    Bonus: If agent correctly identifies typosquat via analyze_email specifically → +0.0401
-    """
+    """Task Hard: Typosquat trap — 'micr0soft.com'."""
     required_checks = 2
     ground_truth = "scam"
 
@@ -354,19 +314,17 @@ def grade_task_hard(
     overconf = _overconfidence_penalty(checks_run, required_checks)
     eff = _efficiency_score(steps_used, max_steps=15)
 
-    # Typosquat-specific bonus: must have run analyze_email to catch the '0' character
-    typosquat_caught_bonus = 0.0401 if "analyze_email" in checks_run and verdict == ground_truth else 0.0001
+    typosquat_caught_bonus = _safe_float(0.04) if "analyze_email" in checks_run and verdict == ground_truth else _safe_float(0.0)
 
     if verdict == ground_truth:
-        dec = 0.9499
+        dec = 0.95
     elif verdict is None:
-        dec = 0.0501
+        dec = 0.05
     else:
-        # Approved a typosquatted job — severe penalty
-        dec = 0.0501
+        dec = 0.05
 
-    # Apply overconfidence penalty
-    dec_adjusted = max(0.0501, min(0.9899, dec + overconf))
+    dec_adjusted = dec + overconf
+    dec_adjusted = max(0.05, min(0.99, dec_adjusted))
 
     raw = (
         dec_adjusted * 0.45 +
@@ -374,15 +332,15 @@ def grade_task_hard(
         eff * 0.20 +
         typosquat_caught_bonus
     )
-    raw = max(0.0201, min(0.9799, raw))
-    score = _clamp_score(raw)
+    raw = max(0.02, min(0.98, raw))
+    score = _safe_float(raw)
 
     return GradeResult(
         score=score,
         signal_detection_score=sig,
         decision_correctness=dec_adjusted,
         overconfidence_penalty=overconf,
-        scheduling_score=0.0501,   # Scam — scheduling irrelevant
+        scheduling_score=_safe_float(0.05),
         efficiency_score=eff,
         details={
             "ground_truth": ground_truth,
@@ -391,7 +349,7 @@ def grade_task_hard(
             "steps_used": steps_used,
             "typosquat_caught_bonus": typosquat_caught_bonus,
             "verdict_correct": verdict == ground_truth,
-            "trap_triggered": verdict == "safe",   # Agent fell for the typosquat
+            "trap_triggered": verdict == "safe",
         },
     )
 
@@ -408,13 +366,7 @@ GRADERS = {
 
 
 def grade(task_id: str, **kwargs) -> GradeResult:
-    """
-    Main entry point. kwargs passed directly to the per-task grader.
-    Required kwargs per task:
-      All tasks:   verdict, checks_run, steps_used
-      task_medium: + finalized_slot, proposed_slot, valid_slots, steps_in_scheduling
-      task_hard:   + finalized_slot, proposed_slot, valid_slots, steps_in_scheduling
-    """
+    """Main entry point."""
     if task_id not in GRADERS:
         raise ValueError(f"No grader for task '{task_id}'. Available: {list(GRADERS.keys())}")
     return GRADERS[task_id](**kwargs)
