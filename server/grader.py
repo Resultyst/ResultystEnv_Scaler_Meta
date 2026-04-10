@@ -367,6 +367,11 @@ GRADERS = {
     "task_hard": grade_task_hard,
 }
 
+# Alias for backward compatibility with env.py
+def _strict_clamp(value: float) -> float:
+    """Ensures value is strictly between 0 and 1 (0.0001 to 0.9999)."""
+    return _safe_float(value)
+
 
 def grade(task_id: str, **kwargs) -> GradeResult:
     """Main entry point."""
