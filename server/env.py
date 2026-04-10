@@ -513,7 +513,7 @@ class ResultystEnv:
 
     @staticmethod
     def _clip(val: float) -> float:
-        return round(max(0.01, min(0.99, val)), 4)
+        return round(max(0.0001, min(0.9999, float(val))), 4)
 
     def _build_reward(
         self,
@@ -524,18 +524,34 @@ class ResultystEnv:
         self._accumulated_reward = max(
             0.0, min(MAX_REWARD_ACCUMULATE, self._accumulated_reward + value)
         )
-        return Reward(value=value, breakdown=breakdown, reason=reason)
+        def _scrub(v):
+            if isinstance(v, (float, int)) and not isinstance(v, bool):
+                return round(max(0.0001, min(0.9999, float(v))), 4)
+            return v
+        
+        bd_dict = breakdown.model_dump()
+        scrubbed_bd = {k: _scrub(v) for k, v in bd_dict.items()}
+
+        return Reward(value=self._clip(value), breakdown=RewardBreakdown(**scrubbed_bd), reason=reason)
 
     def _build_info(self) -> dict[str, Any]:
         s = self._state
-        return {
+        def _scrub(v):
+            if isinstance(v, (float, int)) and not isinstance(v, bool):
+                return round(max(0.0001, min(0.9999, float(v))), 4)
+            if isinstance(v, list): return [_scrub(x) for x in v]
+            if isinstance(v, dict): return {k: _scrub(val) for k, val in v.items()}
+            return v
+
+        raw_info = {
             "task_id": s.task_id,
             "stage": s.stage,
             "step_count": s.step_count,
             "checks_completed": list(s.checks_completed),
             "verdict": s.verdict,
-            "accumulated_reward": round(self._accumulated_reward, 4),
+            "accumulated_reward": self._accumulated_reward,
         }
+        return {k: _scrub(v) for k, v in raw_info.items()}
 
     def _record_history(self, action: Action, reward: Reward) -> None:
         self._state.history.append({
