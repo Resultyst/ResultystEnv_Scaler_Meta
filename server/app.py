@@ -67,6 +67,37 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────────
+# Helper for safe float scrubbing
+# ─────────────────────────────────────────────
+
+def _scrub_grade_response(obj):
+    """Recursively ensure no float is exactly 0.0 or 1.0."""
+    if isinstance(obj, float):
+        if obj == 0.0 or obj == -0.0:
+            return 0.0001
+        if obj == 1.0:
+            return 0.9999
+        if obj == -1.0:
+            return -0.9999
+        if obj > 0:
+            return max(0.0001, min(0.9999, obj))
+        else:
+            return max(-0.9999, min(-0.0001, obj))
+    elif isinstance(obj, int):
+        if obj == 0:
+            return 0.0001
+        if obj == 1:
+            return 0.9999
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: _scrub_grade_response(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_scrub_grade_response(v) for v in obj]
+    else:
+        return obj
+
+
+# ─────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────
 
@@ -138,7 +169,7 @@ def get_state():
 def grade_episode():
     """
     Run the deterministic grader on the current (or just-finished) episode.
-    Returns interpretable scoring breakdown.
+    Returns interpretable scoring breakdown with guaranteed safe floats.
     """
     try:
         result = env_instance.grade_episode()
@@ -148,35 +179,10 @@ def grade_episode():
         raise HTTPException(status_code=409, detail=str(e))
 
 
-def _scrub_grade_response(obj):
-    """Recursively ensure no float is exactly 0.0 or 1.0."""
-    if isinstance(obj, float):
-        if obj == 0.0 or obj == -0.0:
-            return 0.0001
-        if obj == 1.0:
-            return 0.9999
-        if obj == -1.0:
-            return -0.9999
-        if obj > 0:
-            return max(0.0001, min(0.9999, obj))
-        else:
-            return max(-0.9999, min(-0.0001, obj))
-    elif isinstance(obj, int):
-        if obj == 0:
-            return 0.0001
-        if obj == 1:
-            return 0.9999
-        return float(obj)
-    elif isinstance(obj, dict):
-        return {k: _scrub_grade_response(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_scrub_grade_response(v) for v in obj]
-    else:
-        return obj
-
 def main():
     import uvicorn
     uvicorn.run("server.app:app", host="0.0.0.0", port=7860)
+
 
 if __name__ == "__main__":
     main()
