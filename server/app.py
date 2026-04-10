@@ -32,23 +32,20 @@ from .tasks import list_tasks
 # ─────────────────────────────────────────────
 
 def scrub_float(obj: Any) -> Any:
-    """Recursively replace any float equal to 0.0 or 1.0 with safe values."""
+    """Recursively replace any float outside (0,1) with safe values."""
     if isinstance(obj, float):
-        if obj == 0.0 or obj == -0.0:
+        # Convert negative to positive (use absolute value)
+        if obj < 0:
+            obj = -obj
+        if obj == 0.0:
             return 0.0001
-        if obj == 1.0:
+        if obj >= 1.0:
             return 0.9999
-        if obj == -1.0:
-            return -0.9999
-        # Also clamp to safe range just in case
-        if obj > 0:
-            return max(0.0001, min(0.9999, obj))
-        else:
-            return max(-0.9999, min(-0.0001, obj))
+        return max(0.0001, min(0.9999, obj))
     elif isinstance(obj, int):
-        if obj == 0:
+        if obj <= 0:
             return 0.0001
-        if obj == 1:
+        if obj >= 1:
             return 0.9999
         return float(obj)
     elif isinstance(obj, dict):
