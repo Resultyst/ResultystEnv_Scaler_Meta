@@ -1,24 +1,18 @@
 """
 ResultystEnv — FastAPI Server
 Exposes the OpenEnv interface over HTTP.
-
-Endpoints:
-  POST /reset      → Observation
-  POST /step       → StepResponse (observation, reward, done, info)
-  GET  /state      → EnvState
-  GET  /health     → {"status": "ok"}
-  GET  /tasks      → list of available tasks
-  GET  /grade      → GradeResult for current episode
 """
 
 from __future__ import annotations
 
-import os
+import json
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from .env import ResultystEnv
 from .models import (
@@ -34,44 +28,11 @@ from .tasks import list_tasks
 
 
 # ─────────────────────────────────────────────
-# App setup
+# Global float scrubber
 # ─────────────────────────────────────────────
 
-env_instance = ResultystEnv()
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Warm up with default task on startup
-    env_instance.reset("task_easy")
-    yield
-
-
-app = FastAPI(
-    title="ResultystEnv",
-    description=(
-        "OpenEnv-compatible environment simulating two-stage HR workflows: "
-        "job scam detection + interview scheduling. "
-        "Built for the OpenEnv Hackathon by Team Resultyst."
-    ),
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ─────────────────────────────────────────────
-# Helper for safe float scrubbing
-# ─────────────────────────────────────────────
-
-def _scrub_grade_response(obj):
-    """Recursively ensure no float is exactly 0.0 or 1.0."""
+def scrub_float(obj: Any) -> Any:
+    """Recursively replace any float equal to 0.0 or 1.0 with safe values."""
     if isinstance(obj, float):
         if obj == 0.0 or obj == -0.0:
             return 0.0001
@@ -79,6 +40,7 @@ def _scrub_grade_response(obj):
             return 0.9999
         if obj == -1.0:
             return -0.9999
+        # Also clamp to safe range just in case
         if obj > 0:
             return max(0.0001, min(0.9999, obj))
         else:
@@ -90,11 +52,65 @@ def _scrub_grade_response(obj):
             return 0.9999
         return float(obj)
     elif isinstance(obj, dict):
-        return {k: _scrub_grade_response(v) for k, v in obj.items()}
+        return {k: scrub_float(v) for k, v in obj.items()}
     elif isinstance(obj, list):
-        return [_scrub_grade_response(v) for v in obj]
+        return [scrub_float(v) for v in obj]
+    elif isinstance(obj, tuple):
+        return tuple(scrub_float(v) for v in obj)
     else:
         return obj
+
+
+class FloatScrubberMiddleware(BaseHTTPMiddleware):
+    """Middleware that scrubs all floats in JSON responses."""
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if response.headers.get("content-type") == "application/json":
+            body = b""
+            async for chunk in response.body_iterator:
+                body += chunk
+            try:
+                data = json.loads(body)
+                scrubbed = scrub_float(data)
+                return Response(
+                    content=json.dumps(scrubbed),
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    media_type="application/json",
+                )
+            except:
+                pass
+        return response
+
+
+# ─────────────────────────────────────────────
+# App setup
+# ─────────────────────────────────────────────
+
+env_instance = ResultystEnv()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    env_instance.reset("task_easy")
+    yield
+
+
+app = FastAPI(
+    title="ResultystEnv",
+    description="OpenEnv-compatible HR workflow environment.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Add middleware (order matters)
+app.add_middleware(FloatScrubberMiddleware)  # This scrubs all JSON responses
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ─────────────────────────────────────────────
@@ -103,29 +119,21 @@ def _scrub_grade_response(obj):
 
 @app.get("/health", tags=["system"])
 def health_check():
-    """Liveness probe — must return 200 for HF Space auto-ping."""
     return {"status": "ok", "env": "ResultystEnv", "version": "1.0.0"}
 
 
 @app.get("/tasks", tags=["system"])
 def get_tasks():
-    """List all available tasks with metadata."""
     return {"tasks": list_tasks()}
 
 
 @app.get("/", tags=["system"])
 def root():
-    """Root health probe — HF Space auto-ping and openenv validate land here."""
     return {"status": "ok", "env": "ResultystEnv", "version": "1.0.0"}
 
 
 @app.post("/reset", response_model=Observation, tags=["openenv"])
 def reset(request: Optional[ResetRequest] = None):
-    """
-    Reset the environment and start a new episode.
-    Accepts empty body {} — defaults to task_easy.
-    Returns the initial Observation.
-    """
     task_id = (request.task_id if request else None) or "task_easy"
     try:
         obs = env_instance.reset(task_id=task_id)
@@ -136,9 +144,6 @@ def reset(request: Optional[ResetRequest] = None):
 
 @app.post("/step", response_model=StepResponse, tags=["openenv"])
 def step(request: StepRequest):
-    """
-    Execute one action and return the next observation, reward, done flag, and info.
-    """
     try:
         obs, reward, done, info = env_instance.step(request.action)
         return StepResponse(observation=obs, reward=reward, done=done, info=info)
@@ -150,15 +155,9 @@ def step(request: StepRequest):
 
 @app.get("/state", tags=["openenv"])
 def get_state():
-    """
-    Return the full internal environment state.
-    Used by openenv validate and for debugging.
-    Returns EnvState as dict (set is JSON-serialized as list).
-    """
     try:
         s = env_instance.state()
         d = s.model_dump()
-        # Convert set to list for JSON serialisation
         d["checks_completed"] = list(d.get("checks_completed", []))
         return d
     except RuntimeError as e:
@@ -167,14 +166,9 @@ def get_state():
 
 @app.get("/grade", tags=["openenv"])
 def grade_episode():
-    """
-    Run the deterministic grader on the current (or just-finished) episode.
-    Returns interpretable scoring breakdown with guaranteed safe floats.
-    """
     try:
         result = env_instance.grade_episode()
-        # Double-scrub the result to ensure NO 0.0 or 1.0 anywhere
-        return _scrub_grade_response(result)
+        return result  # Middleware will scrub floats
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
