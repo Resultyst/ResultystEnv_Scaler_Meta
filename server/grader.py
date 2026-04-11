@@ -16,7 +16,7 @@ def _safe_float(value: float, allow_negative: bool = False) -> float:
     Returns value strictly in (0, 1) or (-1, 1) if allow_negative=True.
     """
     val = float(value)
-    
+
     if allow_negative:
         if val == 0.0 or val == -0.0:
             return -0.0001
@@ -43,7 +43,6 @@ def _safe_float(value: float, allow_negative: bool = False) -> float:
         return rounded
 
 
-# Alias for backward compatibility with env.py
 def _strict_clamp(value: float) -> float:
     """Ensures value is strictly between 0 and 1 (0.0001 to 0.9999)."""
     return _safe_float(value)
@@ -72,7 +71,10 @@ class GradeResult:
     def as_dict(self) -> dict:
         """Return dict with guaranteed safe float values."""
         def scrub(obj):
-            if isinstance(obj, float):
+            # IMPORTANT: bool must be checked before int (bool is subclass of int in Python)
+            if isinstance(obj, bool):
+                return obj
+            elif isinstance(obj, float):
                 return _safe_float(obj, allow_negative=True) if obj < 0 else _safe_float(obj)
             elif isinstance(obj, int):
                 return _safe_float(float(obj))
@@ -80,13 +82,11 @@ class GradeResult:
                 return {k: scrub(v) for k, v in obj.items()}
             elif isinstance(obj, list):
                 return [scrub(v) for v in obj]
-            elif isinstance(obj, bool):
-                return obj
             elif obj is None:
                 return None
             else:
                 return obj
-        
+
         raw = {
             "score": self.score,
             "signal_detection_score": self.signal_detection_score,
@@ -96,7 +96,7 @@ class GradeResult:
             "efficiency_score": self.efficiency_score,
             "details": scrub(self.details),
         }
-        
+
         return scrub(raw)
 
 
@@ -111,30 +111,30 @@ def _signal_detection_score(checks_run: set[str], required_checks: int) -> float
     """Returns strictly between 0.0001 and 0.9999."""
     n_run = len(checks_run & VERIFICATION_CHECKS)
     n_total = len(VERIFICATION_CHECKS)
-    
+
     if n_total == 0:
         return _safe_float(0.05)
-        
+
     fraction = n_run / n_total
 
     if n_run >= required_checks:
         result = min(0.95, fraction + 0.1)
     else:
         result = max(0.05, fraction)
-    
+
     return _safe_float(result)
 
 
 def _overconfidence_penalty(checks_run: set[str], required_checks: int) -> float:
     """Returns negative float (or -0.0001). NEVER 0.0."""
     n_run = len(checks_run & VERIFICATION_CHECKS)
-    
+
     if n_run >= required_checks:
         return _safe_float(-0.0001, allow_negative=True)
-    
+
     missing = required_checks - n_run
     penalty = -0.15 * missing
-    
+
     return _safe_float(penalty, allow_negative=True)
 
 
@@ -142,11 +142,11 @@ def _efficiency_score(steps_used: int, max_steps: int) -> float:
     """Returns strictly between 0.0001 and 0.9999."""
     if steps_used <= 0:
         return _safe_float(0.05)
-    
+
     min_expected = 3
     denominator = max(1, max_steps - min_expected)
     score = (max_steps - steps_used) / denominator
-    
+
     result = max(0.05, min(0.95, score))
     return _safe_float(result)
 
@@ -176,10 +176,10 @@ def _compute_comfort_score(slot_iso: str) -> float:
     """Returns strictly between 0.0001 and 0.9999."""
     try:
         from datetime import datetime
-        
+
         dt = datetime.fromisoformat(slot_iso)
         hour = dt.hour + dt.minute / 60
-        
+
         if 8.0 <= hour < 18.0:
             return _safe_float(0.95)
         if 6.0 <= hour < 8.0 or 18.0 <= hour < 20.0:
@@ -228,7 +228,7 @@ def grade_task_easy(
     return GradeResult(
         score=score,
         signal_detection_score=sig,
-        decision_correctness=dec_adjusted,
+        decision_correctness=_safe_float(dec_adjusted),
         overconfidence_penalty=overconf,
         scheduling_score=_safe_float(0.05),
         efficiency_score=eff,
@@ -237,7 +237,7 @@ def grade_task_easy(
             "agent_verdict": verdict,
             "checks_run": list(checks_run),
             "steps_used": steps_used,
-            "verdict_correct": verdict == ground_truth,
+            "verdict_correct": verdict == ground_truth,  # bool — safe
         },
     )
 
@@ -283,7 +283,7 @@ def grade_task_medium(
     return GradeResult(
         score=score,
         signal_detection_score=sig,
-        decision_correctness=dec_adjusted,
+        decision_correctness=_safe_float(dec_adjusted),
         overconfidence_penalty=overconf,
         scheduling_score=sched,
         efficiency_score=eff,
@@ -293,7 +293,7 @@ def grade_task_medium(
             "checks_run": list(checks_run),
             "finalized_slot": finalized_slot,
             "valid_slots": valid_slots,
-            "verdict_correct": verdict == ground_truth,
+            "verdict_correct": verdict == ground_truth,  # bool — safe
             "steps_used": steps_used,
         },
     )
@@ -317,7 +317,11 @@ def grade_task_hard(
     overconf = _overconfidence_penalty(checks_run, required_checks)
     eff = _efficiency_score(steps_used, max_steps=15)
 
-    typosquat_caught_bonus = _safe_float(0.04) if "analyze_email" in checks_run and verdict == ground_truth else _safe_float(0.0)
+    typosquat_caught_bonus = (
+        _safe_float(0.04)
+        if "analyze_email" in checks_run and verdict == ground_truth
+        else _safe_float(0.0001)
+    )
 
     if verdict == ground_truth:
         dec = 0.95
@@ -341,7 +345,7 @@ def grade_task_hard(
     return GradeResult(
         score=score,
         signal_detection_score=sig,
-        decision_correctness=dec_adjusted,
+        decision_correctness=_safe_float(dec_adjusted),
         overconfidence_penalty=overconf,
         scheduling_score=_safe_float(0.05),
         efficiency_score=eff,
@@ -351,8 +355,8 @@ def grade_task_hard(
             "checks_run": list(checks_run),
             "steps_used": steps_used,
             "typosquat_caught_bonus": typosquat_caught_bonus,
-            "verdict_correct": verdict == ground_truth,
-            "trap_triggered": verdict == "safe",
+            "verdict_correct": verdict == ground_truth,  # bool — safe
+            "trap_triggered": verdict == "safe",         # bool — safe
         },
     )
 
@@ -366,11 +370,6 @@ GRADERS = {
     "task_medium": grade_task_medium,
     "task_hard": grade_task_hard,
 }
-
-# Alias for backward compatibility with env.py
-def _strict_clamp(value: float) -> float:
-    """Ensures value is strictly between 0 and 1 (0.0001 to 0.9999)."""
-    return _safe_float(value)
 
 
 def grade(task_id: str, **kwargs) -> GradeResult:
