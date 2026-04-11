@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ResultystEnv — Baseline Inference
+ResultystEnv — Baseline Inference (Fixed LLM Connectivity)
 """
 
 import json
@@ -11,18 +11,15 @@ import time
 from typing import Dict, List, Optional
 
 import requests
-from openai import OpenAI
+from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError
 
 # ------------------------------------------------------------------
-# Environment Variables (injected by validator, DO NOT CHANGE)
+# Environment Variables (injected by validator)
 # ------------------------------------------------------------------
 API_BASE_URL = os.environ["API_BASE_URL"]
 API_KEY = os.environ["API_KEY"]
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
-
-# Use a model that the LiteLLM proxy will route correctly.
-# Hugging Face TGI models are often accessed via "meta-llama/Llama-3.1-8B-Instruct"
-MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
+MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 
 BENCHMARK = "ResultystEnv"
 TASKS = ["task_easy", "task_medium", "task_hard"]
@@ -67,9 +64,25 @@ class EnvClient:
         return r.json()
 
 # ------------------------------------------------------------------
-# LLM Client
+# LLM Client (with connection test and robust error handling)
 # ------------------------------------------------------------------
-client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=API_KEY,
+    timeout=30.0,
+    max_retries=0,  # we handle retries ourselves
+)
+
+def test_llm_connection() -> bool:
+    """Quick test to verify the LLM proxy is reachable and authenticated."""
+    try:
+        # Minimal request – just list models or a simple completion
+        _ = client.models.list()
+        print(f"[DEBUG] LLM connection test successful to {API_BASE_URL}", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"[ERROR] LLM connection test failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
 
 SYSTEM_PROMPT = """You are an HR compliance agent. You must output ONLY valid JSON.
 
@@ -123,19 +136,31 @@ def get_action(obs: dict, history: List[str]) -> tuple[str, dict]:
         {"role": "user", "content": prompt},
     ]
     print(f"[DEBUG] Calling LLM with model {MODEL_NAME}", file=sys.stderr)
-    resp = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=messages,
-        max_tokens=150,
-        temperature=0.0,
-    )
-    raw = resp.choices[0].message.content
-    print(f"[DEBUG] LLM response: {raw}", file=sys.stderr)
-    parsed = parse_action(raw)
-    if not parsed or "action_type" not in parsed:
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            max_tokens=150,
+            temperature=0.0,
+        )
+        raw = resp.choices[0].message.content
+        print(f"[DEBUG] LLM response: {raw}", file=sys.stderr)
+        parsed = parse_action(raw)
+        if not parsed or "action_type" not in parsed:
+            available = obs.get("available_actions", ["check_domain"])
+            print(f"[WARN] Invalid LLM response, falling back to {available[0]}", file=sys.stderr)
+            return available[0], {}
+        return parsed["action_type"], parsed.get("parameters", {})
+    except (APIConnectionError, APITimeoutError, RateLimitError, APIError) as e:
+        # Log the error clearly – validator will see this
+        print(f"[LLM ERROR] {type(e).__name__}: {e}", file=sys.stderr)
+        # Fallback to a safe action
         available = obs.get("available_actions", ["check_domain"])
         return available[0], {}
-    return parsed["action_type"], parsed.get("parameters", {})
+    except Exception as e:
+        print(f"[LLM UNEXPECTED ERROR] {type(e).__name__}: {e}", file=sys.stderr)
+        available = obs.get("available_actions", ["check_domain"])
+        return available[0], {}
 
 # ------------------------------------------------------------------
 # Episode Runner
@@ -206,6 +231,12 @@ def run_episode(task_id: str) -> dict:
 def main():
     print(f"[DEBUG] API_BASE_URL = {API_BASE_URL}", file=sys.stderr)
     print(f"[DEBUG] API_KEY = {API_KEY[:8]}...", file=sys.stderr)
+    print(f"[DEBUG] MODEL_NAME = {MODEL_NAME}", file=sys.stderr)
+
+    # Test LLM connectivity before starting episodes
+    if not test_llm_connection():
+        print("[FATAL] Cannot reach LLM proxy – aborting.", file=sys.stderr)
+        sys.exit(1)
 
     results = []
     for task in TASKS:
