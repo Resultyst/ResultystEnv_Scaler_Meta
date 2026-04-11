@@ -208,12 +208,14 @@ def run_episode(task_id: str) -> dict:
             if done:
                 break
 
-        score = sum(rewards) / MAX_TOTAL_REWARD if MAX_TOTAL_REWARD > 0 else 0.0
-        score = min(max(score, 0.0), 1.0)
+        EPSILON = 1e-6  # scores must be strictly between 0 and 1
+        raw_score = sum(rewards) / MAX_TOTAL_REWARD if MAX_TOTAL_REWARD > 0 else 0.0
+        score = min(max(raw_score, EPSILON), 1.0 - EPSILON)
 
         try:
             grade = env.grade()
-            grader_score = grade.get("score", score)
+            raw_grader = grade.get("score", score)
+            grader_score = min(max(raw_grader, EPSILON), 1.0 - EPSILON)
         except:
             grader_score = score
 
