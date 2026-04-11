@@ -32,17 +32,24 @@ from .tasks import list_tasks
 # ─────────────────────────────────────────────
 
 def scrub_float(obj: Any) -> Any:
-    """Recursively replace any float outside (0,1) with safe values."""
-    if isinstance(obj, float):
-        # Convert negative to positive
+    """
+    Recursively replace any float outside (0, 1) with safe values.
+    IMPORTANT: bool is checked before int because bool is a subclass of int in Python.
+    """
+    if isinstance(obj, bool):
+        # Booleans must be checked BEFORE int — return as-is, never convert
+        return obj
+    elif isinstance(obj, float):
+        # Convert negative to small positive
         if obj < 0:
-            obj = -obj
+            obj = abs(obj)
         if obj == 0.0:
             return 0.0001
         if obj >= 1.0:
             return 0.9999
         return max(0.0001, min(0.9999, obj))
     elif isinstance(obj, int):
+        # Only convert ints that represent scores (0 or 1 boundary)
         if obj <= 0:
             return 0.0001
         if obj >= 1:
@@ -57,6 +64,7 @@ def scrub_float(obj: Any) -> Any:
     else:
         return obj
 
+
 class FloatScrubberMiddleware(BaseHTTPMiddleware):
     """Middleware that scrubs all floats in JSON responses."""
     async def dispatch(self, request, call_next):
@@ -70,7 +78,6 @@ class FloatScrubberMiddleware(BaseHTTPMiddleware):
                 data = json.loads(body)
                 scrubbed = scrub_float(data)
                 new_body = json.dumps(scrubbed).encode("utf-8")
-                # Create new headers without content-length
                 headers = dict(response.headers)
                 headers.pop("content-length", None)
                 return Response(
@@ -79,8 +86,8 @@ class FloatScrubberMiddleware(BaseHTTPMiddleware):
                     headers=headers,
                     media_type="application/json",
                 )
-            except:
-                # If JSON parsing fails, return original response
+            except Exception:
+                # If JSON parsing fails, return original response unchanged
                 pass
         return response
 
@@ -105,8 +112,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add middleware (order matters)
-app.add_middleware(FloatScrubberMiddleware)  # This scrubs all JSON responses
+# Add middleware (order matters — FloatScrubber must be first)
+app.add_middleware(FloatScrubberMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
