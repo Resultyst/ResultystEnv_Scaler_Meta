@@ -30,6 +30,7 @@ from .models import (
 )
 from .tasks import get_task
 from .grader import grade, _compute_comfort_score, _strict_clamp
+
 # ─────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────
@@ -76,7 +77,6 @@ class ResultystEnv:
             task_id=task_id,
             stage="verification",
             job_post=copy.deepcopy(task["job_post"]),
-            # Start with all fields hidden (None) — revealed progressively
             company_info=CompanyInfo(),
             calendars=copy.deepcopy(task["calendars"]),
             history=[],
@@ -112,13 +112,13 @@ class ResultystEnv:
         self._action_counts[atype] += 1
         loop_penalty = 0.0001  # Small positive instead of 0.0
         if self._action_counts[atype] > LOOP_THRESHOLD:
-            loop_penalty = -0.0201  # Small negative penalty
+            loop_penalty = -0.0201
             self._accumulated_reward = max(0.0001, self._accumulated_reward + loop_penalty)
 
         # ── Stage gate ─────────────────────────
         if s.stage == "verification" and atype in SCHEDULING_ACTIONS:
             reward = self._build_reward(
-                value=self._safe_clip(0.0001),
+                value=_safe_clamp(0.0001),
                 breakdown=RewardBreakdown(loop_penalty=_safe_clamp(abs(loop_penalty))),
                 reason=f"❌ Action '{atype}' is not available in verification stage.",
             )
@@ -130,7 +130,7 @@ class ResultystEnv:
 
         if s.stage == "scheduling" and atype in VERIFICATION_ACTIONS:
             reward = self._build_reward(
-                value=self._safe_clip(0.0001),
+                value=_safe_clamp(0.0001),
                 breakdown=RewardBreakdown(loop_penalty=_safe_clamp(abs(loop_penalty))),
                 reason=f"❌ Action '{atype}' is not available in scheduling stage.",
             )
@@ -172,7 +172,6 @@ class ResultystEnv:
         if atype == "check_domain":
             is_new = "check_domain" not in s.checks_completed
             s.checks_completed.add("check_domain")
-            # Reveal domain intelligence
             s.company_info.domain_age_days = truth.domain_age_days
             s.company_info.has_https = truth.has_https
             s.company_info.registrar = truth.registrar
@@ -203,7 +202,7 @@ class ResultystEnv:
                 breakdown=RewardBreakdown(
                     signal_strength=_safe_clamp(strength),
                     step_taken=_safe_clamp(step_base),
-                    loop_penalty=_safe_clamp(abs(loop_penalty)) if loop_penalty < 0 else 0.0001
+                    loop_penalty=_safe_clamp(abs(loop_penalty)) if loop_penalty < 0 else 0.0001,
                 ),
                 reason=f"check_domain: signal_strength={strength:.2f} (domain_age={age}d).",
             )
@@ -225,7 +224,7 @@ class ResultystEnv:
                     f"Real domain likely: '{truth.raw_signals.get('real_microsoft_domain', 'unknown')}'."
                 )
                 if is_new:
-                    strength += 0.0501  # Extra signal for catching typosquat
+                    strength += 0.0501
             elif not truth.email_domain_match:
                 msg = (
                     f"🟡 Email '{s.job_post.email}' does not match company domain. "
@@ -243,7 +242,7 @@ class ResultystEnv:
                 breakdown=RewardBreakdown(
                     signal_strength=_safe_clamp(strength),
                     step_taken=_safe_clamp(step_base),
-                    loop_penalty=_safe_clamp(abs(loop_penalty)) if loop_penalty < 0 else 0.0001
+                    loop_penalty=_safe_clamp(abs(loop_penalty)) if loop_penalty < 0 else 0.0001,
                 ),
                 reason=f"analyze_email: signal_strength={strength:.2f}, typosquat={truth.typosquat_detected}.",
             )
@@ -283,25 +282,24 @@ class ResultystEnv:
                 breakdown=RewardBreakdown(
                     signal_strength=_safe_clamp(strength),
                     step_taken=_safe_clamp(step_base),
-                    loop_penalty=_safe_clamp(abs(loop_penalty)) if loop_penalty < 0 else 0.0001
+                    loop_penalty=_safe_clamp(abs(loop_penalty)) if loop_penalty < 0 else 0.0001,
                 ),
                 reason=f"verify_company: signal_strength={strength:.2f}.",
             )
             return self._build_observation(message=msg), reward
 
         # ── Verdict actions ────────────────────
-
         if atype == "mark_safe":
             return self._handle_mark_safe(loop_penalty)
 
         if atype == "reject_job":
             return self._handle_reject_job(loop_penalty)
 
-        # Fallback (should not reach here due to Literal type)
+        # Fallback
         reward = self._build_reward(
             value=self._safe_clip(0.0001),
             breakdown=RewardBreakdown(),
-            reason="Unknown action."
+            reason="Unknown action.",
         )
         return self._build_observation(message="Unknown action."), reward
 
@@ -312,11 +310,10 @@ class ResultystEnv:
         required_checks = task["required_checks"]
         n_checks = len(s.checks_completed)
 
-        overconf = 0.0001  # Small positive instead of 0.0
+        overconf = 0.0001
         if n_checks < required_checks:
-            # Agent decided without enough investigation
             missing = required_checks - n_checks
-            overconf = -0.2001 * missing  # -0.20 per missing required check
+            overconf = -0.2001 * missing
             msg_prefix = (
                 f"⚠️ mark_safe called after only {n_checks}/{required_checks} required checks. "
                 f"Overconfidence penalty applied."
@@ -325,16 +322,14 @@ class ResultystEnv:
             msg_prefix = f"✅ mark_safe: sufficient evidence gathered ({n_checks} checks)."
 
         if ground_truth == "safe":
-            # Correct verdict
             decision_reward = 0.3001
             s.stage = "scheduling"
             s.verdict = "safe"
             msg = msg_prefix + " Verdict: SAFE. Moving to interview scheduling stage."
         else:
-            # Wrong — approved a scam
             decision_reward = -0.3501
             s.done = True
-            s.verdict = "safe"  # (wrong)
+            s.verdict = "safe"
             msg = msg_prefix + f" ❌ WRONG — ground truth is '{ground_truth}'. Approved a scam post!"
 
         raw_val = decision_reward + overconf + loop_penalty
@@ -424,7 +419,7 @@ class ResultystEnv:
                     f"Comfort score: {comfort:.1f}. Good proposal — now finalize or reschedule."
                 )
             else:
-                raw_reward = 0.0101 if is_new else 0.0001  # Tiny credit for trying new slot
+                raw_reward = 0.0101 if is_new else 0.0001
                 msg = (
                     f"🟡 '{slot}' is proposed but doesn't align with both calendars. "
                     f"Consider rescheduling."
@@ -444,7 +439,7 @@ class ResultystEnv:
 
         if atype == "reschedule":
             reason = action.parameters.get("reason", "No reason given.")
-            raw_reward = -0.0101  # Small cost for rescheduling (time inefficiency)
+            raw_reward = -0.0101
             msg = f"🔄 Rescheduling requested. Reason: {reason}. Propose a new slot."
             reward = self._build_reward(
                 value=self._safe_clip(raw_reward + loop_penalty),
@@ -462,7 +457,7 @@ class ResultystEnv:
         reward = self._build_reward(
             value=self._safe_clip(0.0001),
             breakdown=RewardBreakdown(),
-            reason="Unknown scheduling action."
+            reason="Unknown scheduling action.",
         )
         return self._build_observation(message="Unknown scheduling action."), reward
 
@@ -495,8 +490,7 @@ class ResultystEnv:
                 loop_penalty=_safe_clamp(abs(loop_penalty)) if loop_penalty < 0 else 0.0001,
             )
         elif slot:
-            # Finalized a bad slot
-            final = 0.0501 + loop_penalty  # Tiny credit for finishing
+            final = 0.0501 + loop_penalty
             msg = (
                 f"⚠️ Interview 'finalized' at '{slot}' but this slot has no valid overlap. "
                 f"One party will be inconvenienced."
@@ -504,7 +498,7 @@ class ResultystEnv:
             breakdown = RewardBreakdown(
                 overlap_score=0.0101,
                 comfort_score=0.0101,
-                loop_penalty=_safe_clamp(abs(loop_penalty)) if loop_penalty < 0 else 0.0001
+                loop_penalty=_safe_clamp(abs(loop_penalty)) if loop_penalty < 0 else 0.0001,
             )
         else:
             final = 0.0101
@@ -554,26 +548,30 @@ class ResultystEnv:
         self._accumulated_reward = max(
             0.0001, min(MAX_REWARD_ACCUMULATE, self._accumulated_reward + value)
         )
-        
+
         def _scrub(v):
-            if isinstance(v, (float, int)) and not isinstance(v, bool):
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, (float, int)):
                 return _safe_clamp(float(v))
             return v
-        
+
         bd_dict = breakdown.model_dump()
         scrubbed_bd = {k: _scrub(v) for k, v in bd_dict.items()}
 
         return Reward(
             value=_safe_clamp(value),
             breakdown=RewardBreakdown(**scrubbed_bd),
-            reason=reason
+            reason=reason,
         )
 
     def _build_info(self) -> dict[str, Any]:
         s = self._state
-        
+
         def _scrub(v):
-            if isinstance(v, (float, int)) and not isinstance(v, bool):
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, (float, int)):
                 return _safe_clamp(float(v))
             if isinstance(v, list):
                 return [_scrub(x) for x in v]
@@ -596,7 +594,7 @@ class ResultystEnv:
             "step": self._state.step_count,
             "action": action.model_dump(),
             "reward": reward.value,
-            "message": None,  # Set from observation externally if needed
+            "message": None,
         })
 
     # ─────────────────────────────────────────
@@ -604,7 +602,7 @@ class ResultystEnv:
     # ─────────────────────────────────────────
 
     def grade_episode(self) -> dict:
-        """Run the deterministic grader on the completed episode. Returns grade breakdown."""
+        """Run the deterministic grader on the completed episode."""
         if self._state is None:
             raise RuntimeError("No episode to grade.")
         s = self._state
@@ -627,15 +625,3 @@ def action_param_slot(state: EnvState) -> Optional[str]:
         last = state.history[-1]
         return last.get("action", {}).get("parameters", {}).get("slot")
     return None
-
-
-# Add helper function for strict clamping if not imported from grader
-def _strict_clamp(value: float) -> float:
-    """Ensures value is strictly between 0 and 1 (0.0001 to 0.9999)."""
-    val = float(value)
-    clamped = max(0.0001, min(0.9999, val))
-    return round(clamped, 4)
-
-
-# Alias for consistency
-_safe_clamp = _strict_clamp
